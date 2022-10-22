@@ -1,0 +1,882 @@
+---
+title: "Analysis of Pika Data for Prairie Creek Mine Access Road"
+author: "Jeff Matheson, Tetra Tech Canada Inc."
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  html_notebook:
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+---
+
+```{r global_options, message=FALSE, warning=FALSE, include=FALSE}
+# This stuff below just sets up some default options for when knitr builds the document.
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+# This forces R not to use scientific notation. 
+options(scipen = 999)
+
+# Load all the libraries
+library(tidyverse)
+library(here)       # Helper for file paths
+library(lubridate)  # For dates.
+library(readxl)     # Read excel files
+library(ggpubr)     # ggarrange to arrange plots. 
+library(lme4)       # Regression package
+library(glmmTMB)    # Alternate regression package
+library(MuMIn)      # Dredge for model comparison, R.sqaured estiamtion.
+library(effects)    # Quickly plot model effects
+library(broom)      # Helper for tidying model outputs for exports. 
+library(emmeans)    # Estimate marginal means
+library(DHARMa)     # Simulation of residuals.
+library(kableExtra) # For table formatting. 
+library(vcd)        # For the goodfit test.
+library(visreg)     # Plotting residuals. DHARMa is better for mixed models.
+```
+
+*NOTE: This document is an Rmarkdown notebook that includes R code, results, and text description. The R code is hidden by default. Individual blocks of code can be revealed using the "code" buttons wherever they occur. To show all code by default, use the pull-down menu in the top right. The R project files are stored in a separate folder on the project SharePoint site.*
+
+# Data Import and Preparation
+
+```{r prep, message=FALSE, warning=FALSE}
+
+dat_raw <- read_excel(here("data_raw", "Survey_Details.xlsx"),
+                  sheet = 1, skip = 3, trim_ws = TRUE, na = "999", 
+                  col_names = FALSE)
+
+new_names <- c("site", "area_total",	"area_surveyed_2019",	"transect_25",	
+               "transect_100", "transect_100plus",	"haypiles_active_2019",	
+               "count_25_2019", "count_100_2019",	"count_100plus_2019",	
+               "area_surveyed_2017", "haypiles_active_2017",	"count_25_2017",	
+               "count_100_2017", "count_100plus_2017")
+colnames(dat_raw) <- new_names
+
+# Remove sites that were not surveyed in both years.
+# [JM] Does this need to done? Not sure it does. 
+dat_raw <- dat_raw %>% 
+  filter(!(is.na(area_surveyed_2017) & is.na(area_surveyed_2019)))
+
+dat_2017 <- dat_raw %>% 
+  select(site, area_total, area_surveyed = area_surveyed_2017,
+         haypiles_active = haypiles_active_2017) %>% 
+  mutate(survey_year = "2017") 
+  
+dat_2019 <- dat_raw %>% 
+  select(site, area_total, area_surveyed = area_surveyed_2019,
+         haypiles_active = haypiles_active_2019) %>% 
+  mutate(survey_year = "2019")
+
+dat <- bind_rows(dat_2017, dat_2019) %>% 
+  select(site, area_total, survey_year, area_surveyed, haypiles_active) %>% 
+  mutate(density = haypiles_active / area_surveyed) %>% 
+  arrange(site) %>% 
+  mutate(site  = factor(site))
+
+env <- read_excel(here("data_raw", "Pika_Talus_Sites Description.xlsx"),
+                  skip = 2)
+
+env_names <- c("site", "dist_asr_min", "dist_pwr_min", "area", "elevation_centre", 
+               "geoclimatic_zone", "subpopulation", "aspect", "SiteID_old",
+               "AllnorthID", "boulder_size", "meadow_composition", "
+               meadow_from_talue_edge", "comments")
+colnames(env) <- env_names
+
+env <- env %>% 
+  select(site, dist_asr_min, dist_pwr_min, elevation_centre, geoclimatic_zone,
+         aspect) %>% 
+  arrange(site) %>% 
+  mutate(site  = factor(site))
+
+# Climate data. Processing is done later. 
+cli <- read_excel(here("data_raw", 
+                       "Weather Data WX-2020 08-Oct-20_Daily_R_cleaned.xlsx"))
+
+```
+
+# Exploration
+
+## Counts and Density
+
+```{r fig.height=9, fig.width=6, message=FALSE, warning=FALSE}
+p_count <- dat %>% 
+  ggplot(aes(x = fct_rev(site), y = haypiles_active, fill = survey_year)) + 
+  geom_bar(stat = "identity", position=position_dodge())+
+  coord_flip()+
+  theme_bw()+
+  labs(x = "", y = "Count of Active Haypiles")+
+  # geom_text(aes(label = haypiles_active, colour = survey_year), 
+  #           hjust = -0.5, vjust = 0.4, size = 2.5,
+  #           position = position_dodge(width = 1.0))+
+  theme(legend.position = "top",
+        legend.title = element_blank(),
+        plot.margin = unit(c(1,1,1,0), "pt"),
+        text = element_text(size = 9)
+) 
+# Uncomment to see just this figure. Otherwise, continue to combined figure.
+# p_count
+
+p_dens <- dat %>% 
+  ggplot(aes(x = fct_rev(site), y = density, fill = survey_year)) + 
+  geom_bar(stat = "identity", position=position_dodge())+
+  coord_flip()+
+  theme_bw()+
+  # geom_text(aes(label = format(density, digits = 1), colour = survey_year), 
+  #           hjust = -0.1, vjust = 0.4, size = 2.5,
+  #           position = position_dodge(width = 1.0))+
+  labs(x = "", 
+       y = "Relative Abundance of Active Haypiles (#/ha)",
+       fill = "Survey Year")+
+  theme(legend.position = "top",
+        legend.title = element_blank(),
+        axis.text.y = element_blank(),
+        plot.margin = unit(c(1,1,1,0), "pt"),
+        text = element_text(size = 9)
+)
+# Uncomment to see just this figure. Otherwise, continue to combined figure.
+# p_dens
+
+p_count_dens <- ggarrange(p_count, p_dens,
+                       ncol = 2, nrow = 1, 
+                       widths = c(1.1,0.9),
+                       common.legend = TRUE, legend = "top"
+                       )
+
+ggsave(filename = here("pika", "output", "count_dens_location.jpg"), 
+       width = 6, 
+       height = 9,
+       units = "in",
+       p_count_dens)
+
+p_count_dens
+```
+
+## Zone
+
+```{r fig.height=4, fig.width=4, message=FALSE, warning=FALSE}
+dat %>% 
+  left_join(env, by = "site") %>% 
+  ggplot(aes(x = geoclimatic_zone, y = density)) + 
+  geom_boxplot()+
+  theme_bw()
+```
+
+## Elevation
+
+```{r message=FALSE, warning=FALSE}
+dat %>% 
+  left_join(env, by = "site") %>% 
+  ggplot(aes(x = elevation_centre, y = density, colour = survey_year)) + 
+  geom_point()+
+  geom_smooth(formula = y ~ x, method = "lm")+
+  theme_bw()
+```
+
+## Aspect
+
+```{r fig.height=3, fig.width=5, message=FALSE, warning=FALSE}
+dat %>% 
+  left_join(env, by = "site") %>% 
+  ggplot(aes(x = aspect, y = density)) + 
+  geom_boxplot()+
+  theme_bw()
+```
+
+## Distance to ASR
+
+```{r fig.height=3, fig.width=5, message=FALSE, warning=FALSE}
+dat %>% 
+  left_join(env, by = "site") %>% 
+  ggplot(aes(x = dist_asr_min, y = density, colour = survey_year)) + 
+  geom_point()+
+  geom_smooth(formula = y ~ x, method = "lm")+
+  xlim(0,300)+
+  theme_bw()
+```
+
+## Talus Area
+
+```{r}
+dat %>% 
+  left_join(env, by = "site") %>% 
+  ggplot(aes(x = area_total, y = density, colour = survey_year)) + 
+  geom_point()+
+  geom_smooth(formula = y ~ x, method = "lm", na.rm = TRUE)+
+#  xlim(0,300)+
+  theme_bw()
+```
+
+## Climate Variables
+
+Climate variables that have been found to influence pika:
+
+-   Maximum July temperature (acute heat stress)
+
+-   Mean temperature from June to August (the three warmest months; chronic heat stress)
+
+-   Minimum January temperature (acute cold stress)
+
+-   Mean temperature from December to February (the three coldest months; chronic cold stress)
+
+-   Mean annual precipitation.
+
+Each of these are explored below.
+
+We can't use them in the abundance model because to all sites. We expect them to vary from year-to-year and we already have year as a variable and they would be perfectly correlated.
+
+```{r fig.height=7, fig.width=6, message=FALSE, warning=FALSE}
+max_summer <- cli %>% 
+  mutate(year = year(TIMESTAMP),
+         month = month(TIMESTAMP)) %>% 
+  filter(year %in% c(2015, 2016, 2017, 2018, 2019),
+         month %in% c(6, 7, 8)) %>% 
+  group_by(year) %>% 
+  summarize(max_summer = max(`Temperature (Max C)`))
+
+avg_jun_aug <- cli %>% 
+  mutate(year = year(TIMESTAMP),
+         month = month(TIMESTAMP)) %>% 
+  filter(year %in% c(2015, 2016, 2017, 2018, 2019),
+         month %in% c(06, 07, 08)) %>%
+  group_by(year) %>% 
+  summarize(avg_jun_aug = mean(`Temperature (Avg C)`))
+
+# This one was trickier because December is in the previous year.
+avg_dec_feb <- cli %>% 
+  mutate(year = year(TIMESTAMP),
+          month = month(TIMESTAMP)) %>% 
+  filter(year %in% c(2014, 2015, 2016, 2017, 2018, 2019),
+          month %in% c(12, 01, 02)) %>% 
+  mutate(year_w = case_when(
+    month %in% c(1,2) ~ year,
+    month == 12 ~ year + 1
+  )) %>% 
+  filter(year != 2014) %>% 
+  group_by(year_w) %>% 
+  summarize(avg_dec_feb = mean(`Temperature (Avg C)`)) %>% 
+  mutate(year = year_w) %>% 
+  select(!year_w)
+
+# This one was trickier because December is in the previous year.
+min_winter <- cli %>% 
+  mutate(year = year(TIMESTAMP),
+          month = month(TIMESTAMP)) %>% 
+  filter(year %in% c(2014, 2015, 2016, 2017, 2018, 2019),
+          month %in% c(12, 01, 02)) %>% 
+  mutate(year_w = case_when(
+    month %in% c(1,2) ~ year,
+    month == 12 ~ year + 1
+  )) %>% 
+  filter(year != 2014) %>% 
+  group_by(year_w) %>% 
+  summarize(min_dec_feb = min(`Temperature (Avg C)`)) %>% 
+  mutate(year = year_w) %>% 
+  select(!year_w)
+
+precip_tot <- cli %>% 
+  mutate(year = year(TIMESTAMP),
+         month = month(TIMESTAMP)) %>% 
+  filter(year %in% c(2015, 2016, 2017, 2018, 2019)) %>% 
+  group_by(year) %>% 
+  summarize(precip_tot = sum(`Precipitation (total mm)`))
+
+cli_summary <- left_join(max_summer, avg_jun_aug, by = "year") %>% 
+  left_join(min_winter, by = "year") %>% 
+  left_join(avg_dec_feb, by = "year") %>% 
+  left_join(precip_tot, by = "year")
+
+# For the plot below
+variable_labels <- c("Ave Winter Temp (Dec-Feb)", "Ave Summer Temp (Jun-Aug)", 
+                 "Min Winter Temp (Dec-Feb)", "Max Summer Temp (Jun-Aug)", "Annual Precip. (mm)")
+
+cli_plot <- cli_summary %>% 
+  pivot_longer(cols = !year, names_to = "Climate Variable", 
+               values_to = "value") %>%
+  mutate(year = factor(year),
+         `Climate Variable` = factor(`Climate Variable`,
+                                     levels = c("avg_dec_feb", "avg_jun_aug", "min_dec_feb", "max_summer", "precip_tot"),
+                                     labels = variable_labels)) %>% 
+  dplyr::select(`Climate Variable`, year, value) %>% 
+  ggplot(aes(x= year, y = value, group = `Climate Variable`))+
+  geom_point()+
+  geom_line()+
+  facet_wrap(. ~ `Climate Variable`, scales = "free", nrow = 3)+
+  theme_bw()+
+  labs(x = "", y = "")
+cli_plot
+```
+
+# Abundance Model
+
+## Data Prep
+
+Prepare the data for model fitting. Remove sites with no data in either year.
+
+```{r}
+dat_model <- dat %>% 
+  left_join(env, by = "site") %>% 
+  arrange(survey_year) %>% 
+  mutate(elevation_scaled = scale(elevation_centre),
+         area_total_scaled = scale(area_total),
+         survey_year = factor(survey_year)) %>% 
+  filter(!is.na(haypiles_active))
+```
+
+## Check Distribution of Data
+
+Since the data is count, a poisson or negative binomial distribution is expected. Based on the goodfit test, it would appear that data might follow nb, so will need to try both poisson and nb.
+
+```{r paged.print=TRUE}
+hist(dat_model$haypiles_active)  
+
+fit_poisson <- goodfit(dat_model$haypiles_active, type = "poisson")
+rootogram(fit_poisson)
+fit_nb <- goodfit(dat_model$haypiles_active, type = "nbinomial")
+rootogram(fit_nb)
+```
+
+## Candidate Covariates
+
+The follow Variables are thought/expected to influence active haypile count:
+
+-   Survey year
+
+-   Elevation (scaled)
+
+-   Distance to PWR
+
+-   Aspect
+
+-   Total talus area
+
+-   Survey year \* elevation
+
+## Full Model: Poisson
+
+Model summary and then the comparison of all possible combinations of covariates.
+
+```{r fig.height=7, paged.print=TRUE}
+# Poisson regression.
+m_p <- glmer(haypiles_active ~ survey_year + elevation_scaled + dist_asr_min + area_total_scaled + aspect + aspect + survey_year * elevation_scaled + (1|site),
+          family = (poisson("log")), 
+          data = dat_model,
+          offset = area_surveyed,
+          glmerControl(optimizer = "bobyqa"),
+          na.action=na.fail)
+summary(m_p)
+
+d_p <- dredge(m_p)
+d_p
+```
+
+Summary for top model and a look at the effects.
+
+```{r paged.print=TRUE}
+# Top model for poisson has year and elevation. 
+m_p_top <- glmer(haypiles_active ~ survey_year * elevation_scaled + (1|site),
+          family = (poisson("log")), 
+          data = dat_model,
+          offset = area_surveyed,
+          na.action=na.fail)
+summary(m_p_top)
+
+ae <- allEffects(m_p_top)
+plot(ae, residuals="TRUE")
+```
+
+Have a look at the residuals. Significant problems.
+
+```{r}
+# Look at the residuals.
+simulationOutput <- simulateResiduals(fittedModel = m_p_top, plot = T)
+# No significant problems
+```
+
+## Full Model: Negative Binomial
+
+See if this is better.
+
+```{r paged.print=TRUE}
+# Negative binomial
+m_nb <- glmer.nb(haypiles_active ~ survey_year * elevation_scaled + dist_asr_min +  area_total_scaled + (1|site),
+          data = dat_model,
+          offset = area_surveyed,
+          na.action=na.fail)
+summary(m_nb)
+
+d_nb <- dredge(m_nb)
+d_nb
+```
+
+Summary for top model and check residuals.
+
+```{r paged.print=TRUE}
+m_nb_top <- glmer.nb(haypiles_active ~ survey_year * elevation_scaled + (1|site),
+          data = dat_model,
+          offset = area_surveyed)
+summary(m_nb_top)
+
+# Review the residuals.
+simulationOutput <- simulateResiduals(fittedModel = m_nb_top, plot = T)
+# Significant deviations.
+```
+
+Again, residuals have significant deviations.
+
+## Top Model
+
+Will have to use a simpler model without the interaction term and start again. Top model has year and elevation. Residuals look much better and no significant deviations.
+
+```{r warning=FALSE, paged.print=TRUE}
+# Poisson model appears to be the best.  
+m_p2 <- glmer(haypiles_active ~ survey_year + elevation_scaled + dist_asr_min + area_total_scaled + aspect + (1|site),
+          family = (poisson("log")), 
+          data = dat_model,
+          offset = area_surveyed,
+          glmerControl(optimizer = "bobyqa"),
+          na.action=na.fail)
+summary(m_p2)
+
+d_p2 <- dredge(m_p2)
+d_p2
+
+m_p_top2 <- glmer(haypiles_active ~ survey_year + elevation_scaled + (1|site),
+          family = (poisson("log")), 
+          data = dat_model,
+          offset = area_surveyed)
+summary(m_p_top2)
+
+# Review the residuals.
+simulationOutput <- simulateResiduals(fittedModel = m_p_top2, plot = T)
+
+ae2 <- allEffects(m_p_top2)
+plot(ae2, residuals="TRUE")
+ae2
+```
+
+## Goodness of Fit
+
+The amount of variance explained by the model (goodness-of-fit) can be estimated using a specific formulation of R2 for mixed-models (Nakagawa and Schielzeth 2013). R2 was estimated using the function 'r.squairedGLMM' in the R package MuMIn (). The R2 values reported were estimated using the trigamma method.
+
+The conditional R2 (the proportion of variance explained by both fixed and random effects) is 0.88, indicating that 88% of the variability in the count of active haypiles is explained by survey year, elevation, and the variability within a talus location. When the effect of talus location (the random effect) is removed, the marginal R2 (the proportion of variation explained by fixed effects only) is 0.33, indicating that 33% of the variability between talus locations is explained by survey year and elevation. The difference between the marginal and conditional R2 indicates additional factors may help explain variability in counts of active haypiles. Other factors should be explored and considered in future modeling as new data is collected with the objective of improving the precision of count estimates.
+
+```{r}
+r.squaredGLMM(m_p_top2)
+```
+
+The marginal R2 is a measure of the variability explained by the fixed effects. indicates that about 33% of the variation active haypile counts is explained by year.
+
+## Other Models
+
+A zero-inflated poisson was also tested and residuals had major deviations. Results not shown but code is below for reference.
+
+```{r eval=FALSE, include=FALSE}
+m_zip <- glmmTMB(haypiles_active ~ survey_year + elevation_scaled + (1|site),
+          data = dat_model,
+          offset = area_surveyed,
+          zi = ~1)
+summary(m_zip)
+
+simulationOutput <- simulateResiduals(fittedModel = m_zip, plot = T)
+```
+
+## Outputs for Report
+
+The model used haypile_active counts directly and the area surveyed was included as an offset to account for variation in survey effort. This turns the predictions in to rates: count per average offset. The average offset is 0.0394 (update this). So the predictions are also counts. They can be turned in density (per hectare) by dividing the count by the average offset.
+
+Marginal means and plot for survey_year.
+
+```{r fig.height=4, fig.width=5, paged.print=TRUE}
+means_year <- emmeans(m_p_top2, specs = "survey_year", type = "response")
+means_year <- tidy(summary(means_year)) 
+means_year
+means_year_plot <- means_year %>% 
+  ggplot(aes(x = survey_year, y = rate))+
+  geom_bar(stat = "identity", width = 0.5, fill = "gray")+
+  xlab(label = "") +
+  ylab(label = "Active Haypile Count with 95% CI")+
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), 
+                width = 0.05,
+                ) +
+  theme_bw() +
+  theme(axis.title=element_text(size=10))
+means_year_plot
+
+# Uncomment when ready to export
+#ggsave(filename = here("pika", "output", "means_year_plot.jpg"), 
+#       width = 5, 
+#       height = 3,
+#       means_year_plot)
+```
+
+Export the marginal means for survey year.
+
+```{r}
+means_year_report <- means_year %>% 
+  transmute(`Survey Year` = survey_year,
+            Count = format(rate, digits = 2),
+            `Count SE` = format(std.error, digits = 2),
+            `Count 95% CI` = paste(format(conf.low, digits = 1, nsmall = 2),
+                                "-",
+                                format(conf.high, digits = 1, nsmall = 2),
+                                sep = ""),
+            Density = format(rate/ae2$survey_year$offset, digits = 2),
+            `Density SE` = format(std.error/ae2$survey_year$offset, 
+                                  digits = 2, nsmall = 2),
+            `Density 95% CI` = paste(format(conf.low/ae2$survey_year$offset,
+                                         digits = 2),
+                                  "-",
+                                  format(conf.high/ae2$survey_year$offset, 
+                                         digits = 3),
+                                  sep = "")
+            )
+means_year_report
+
+# Uncomment below when ready to export
+# write_csv(means_year_report, 
+#          here("output", "means_year_report.csv"))
+```
+
+Create a plot of marginal estimates for elevation.
+
+```{r}
+estimates_elevation <- 
+  as.data.frame(emmeans(m_p_top2,
+          type = "response",
+          specs=c("survey_year","elevation_scaled"),
+          at=list(elevation_scaled=seq(min(dat_model$elevation_scaled),
+                                       max(dat_model$elevation_scaled), 
+                                       length.out=50)))) %>% 
+  mutate(elevation = elevation_scaled * sd(dat_model$elevation_centre) + mean(dat_model$elevation_centre))
+         
+p_elev  <-  estimates_elevation %>% 
+  ggplot(aes(x = elevation, y = rate, group = survey_year))+
+  geom_line(aes(colour=survey_year))+    
+#  scale_size_manual(10)+
+#  scale_colour_manual(values=c("#1D4D18", "#5BC355"))+
+#  coord_cartesian(ylim=c(0,4), clip = "on")+
+#  ylim(0,6)+
+  scale_y_continuous(breaks = seq(0, 10, 2))+
+  scale_x_continuous(breaks = seq(800, 1500, 100))+
+  xlab(label = "Elevation (m)")+
+  ylab(label = "Active Haypile Count with 95% CI")+
+  labs(colour = "Survey Year", fill = "Survey Year")+
+  theme_bw()+
+  geom_ribbon(aes(ymin = asymp.LCL, ymax = asymp.UCL, fill=survey_year, colour=NA), alpha=0.1, linetype=0)
+p_elev
+
+# Uncomment when ready to export
+# ggsave(here("pika", "output", "p_elevatin.jpg"), 
+#        width = 5,
+#        height = 3,
+#        p_elev)
+
+```
+
+Export the model selection table from dredge.
+
+```{r}
+tibble(d_p2) %>% 
+  write_csv(here("output", "p2_model_selection.csv"))
+```
+
+Export the model summary for the top model.
+
+```{r}
+broom.mixed::tidy(m_p_top2) %>% 
+  write_csv(here("output", "m_p_top2.csv"))
+```
+
+# Logistic Regression
+
+## Model Selection
+
+```{r}
+dat_model_binomial <- dat_model %>% 
+  mutate(presence = if_else(haypiles_active > 0, 1, 0))
+
+m_b <- glmer(presence ~ survey_year + elevation_scaled + dist_asr_min + area_total_scaled + aspect + aspect + (1|site),
+          family = binomial, 
+          data = dat_model_binomial,
+          offset = area_surveyed,
+          glmerControl(optimizer = "bobyqa"),
+          na.action=na.fail)
+summary(m_b)
+
+d_b <- dredge(m_b)
+d_b
+
+```
+
+```{r}
+m_b_top <- glmer(presence ~ survey_year + elevation_scaled + dist_asr_min + (1|site),
+          family = binomial(link = "logit"), 
+          data = dat_model_binomial)
+summary(m_b_top)
+
+```
+
+```{r}
+# Review the residuals.
+simulationOutput <- simulateResiduals(fittedModel = m_b_top, plot = T)
+
+ae_b <- allEffects(m_b_top)
+plot(ae_b, residuals="TRUE")
+
+```
+
+## Goodness of Fit
+
+```{r}
+r.squaredGLMM(m_b_top)
+```
+
+## Outputs for Report
+
+Marginal means and plot for survey_year.
+
+```{r fig.height=4, fig.width=5, paged.print=TRUE}
+occur_means_year <- emmeans(m_b_top, specs = "survey_year", type = "response")
+occur_means_year <- tidy(summary(occur_means_year)) 
+occur_means_year
+occur_means_year_plot <- occur_means_year %>% 
+  ggplot(aes(x = survey_year, y = prob))+
+  geom_bar(stat = "identity", width = 0.5, fill = "gray")+
+  xlab(label = "") +
+  ylab(label = "Probability of Occurrence with 95% CI")+
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), 
+                width = 0.05,
+                ) +
+  theme_bw() +
+  theme(axis.title=element_text(size=10))
+occur_means_year_plot
+
+# Uncomment when ready to save
+# ggsave(filename = here("pika", "output", "occur_means_year_plot.jpg"), 
+#        width = 5, 
+#        height = 3,
+#        occur_means_year_plot)
+
+```
+
+Export the marginal means for survey year.
+
+```{r}
+occur_means_year_report <- occur_means_year %>% 
+  transmute(`Survey Year` = survey_year,
+            Probability = format(prob, digits = 2),
+            `Probability SE` = format(std.error, digits = 2),
+            `Probability 95% CI` = paste(format(conf.low, digits = 1, nsmall = 2),
+                                "-",
+                                format(conf.high, digits = 1, nsmall = 2),
+                                sep = ""),
+            )
+occur_means_year_report
+
+# Uncomment when ready to save
+# write_csv(occur_means_year_report, 
+#           here("output", "occur_means_year_report.csv"))
+```
+
+Create a plot of marginal estimates for elevation.
+
+```{r}
+occur_estimates_elevation <- 
+  as.data.frame(emmeans(m_b_top,
+          type = "response",
+          specs=c("survey_year","elevation_scaled"),
+          at=list(elevation_scaled=seq(min(dat_model$elevation_scaled),
+                                       max(dat_model$elevation_scaled), 
+                                       length.out=50)))) %>% 
+  mutate(elevation = elevation_scaled * sd(dat_model$elevation_centre) + mean(dat_model$elevation_centre))
+         
+occur_p_elev  <-  occur_estimates_elevation %>% 
+  ggplot(aes(x = elevation, y = prob, group = survey_year))+
+  geom_line(aes(colour=survey_year))+    
+#  scale_size_manual(10)+
+#  scale_colour_manual(values=c("#1D4D18", "#5BC355"))+
+#  coord_cartesian(ylim=c(0,4), clip = "on")+
+#  ylim(0,6)+
+#  scale_y_continuous(breaks = seq(0, 1, 2))+
+  scale_x_continuous(breaks = seq(800, 1500, 100))+
+  xlab(label = "Elevation (m)")+
+  ylab(label = "Probability of Occurrence with 95% CI")+
+  labs(colour = "Survey Year", fill = "Survey Year")+
+  theme_bw()+
+  geom_ribbon(aes(ymin = asymp.LCL, ymax = asymp.UCL, fill=survey_year, colour=NA), alpha=0.1, linetype=0)
+
+occur_p_elev
+
+# Uncomment when ready to save.
+# ggsave(here("pika", "output", "occur_p_elevatin.jpg"), 
+#        width = 5,
+#        height = 3,
+#        occur_p_elev)
+
+```
+
+Create a plot of marginal estimates for distance to ASR.
+
+```{r}
+occur_estimates_distasr <- 
+  as.data.frame(emmeans(m_b_top,
+          type = "response",
+          specs=c("survey_year","dist_asr_min"),
+          at=list(dist_asr_min=seq(min(dat_model_binomial$dist_asr_min),
+                                       max(dat_model_binomial$dist_asr_min), 
+                                       length.out=50))))
+
+occur_p_distasr  <-  occur_estimates_distasr %>% 
+  ggplot(aes(x = dist_asr_min, y = prob, group = survey_year))+
+  geom_line(aes(colour=survey_year))+    
+#  scale_size_manual(10)+
+#  scale_colour_manual(values=c("#1D4D18", "#5BC355"))+
+#  coord_cartesian(ylim=c(0,4), clip = "on")+
+#  ylim(0,6)+
+#  scale_y_continuous(breaks = seq(0, 1, 2))+
+#  scale_x_continuous(breaks = seq(800, 1500, 100))+
+  xlab(label = "Minimum Distance to ASR (m)")+
+  ylab(label = "Probability of Occurrence with 95% CI")+
+  labs(colour = "Survey Year", fill = "Survey Year")+
+  theme_bw()+
+  geom_ribbon(aes(ymin = asymp.LCL, ymax = asymp.UCL, fill=survey_year, colour=NA), alpha=0.1, linetype=0)
+occur_p_distasr
+
+
+# Uncomment when ready to save
+# ggsave(here("pika", "output", "occur_p_elevatin.jpg"), 
+#        width = 5,
+#        height = 3,
+#        occur_p_elev)
+
+```
+
+Export the model selection table from dredge.
+
+```{r}
+# tibble(d_b) %>% 
+#   write_csv(here("output", "b_model_selection.csv"))
+```
+
+Export the model summary for the top model.
+
+```{r}
+# broom.mixed::tidy(m_b_top) %>% 
+#   write_csv(here("output", "m_b_top.csv"))
+```
+
+# Power Analysis
+
+INCOMPLETE - will not run yet
+
+The number of talus sites required to detect a 20% effect in dist to asr.
+
+This was not included in the 2021 baseline report. We will need to do it this time.
+
+```{r}
+library(simr)
+
+# First make survey year a continuous variable
+
+dat_model_sim <- dat_model %>% 
+  mutate(survey_year = as.numeric(survey_year),
+         dst_asr_minx = scale(dist_asr_min))
+
+# Original model
+m <- glmer(haypiles_active ~ dist_asr_min + survey_year + elevation_scaled + (1|site),
+          family = (poisson("log")), 
+          data = dat_model_sim,
+          offset = area_surveyed)
+summary(m)
+
+# Copy the model for the simulation
+m_sim <- m
+fixef(m_sim)["dist_asr_min"]<- 0.1823
+summary(m_sim)
+
+```
+
+Simulate along range of sample sizes to detect -20% change in one year.
+
+```{r}
+m_sim_extend <- extend(m_sim, along="site", n=60)
+
+m_sim_sites <- powerCurve(m_sim_extend,
+                          along = "site",
+                          nsim = 10,
+                          alpha = 0.1, 
+                          breaks = c(20, 30, 40, 50))
+
+print(m_sim_sites)
+plot(m_sim_sites)
+```
+
+Keep site constant and now extend along year
+
+```{r}
+m_sim_extend_year <- extend(m_sim, along="survey_year", n=5)
+
+m_sim_year <- powerCurve(m_sim_extend_year,
+                         test = fixed("dist_asr_min"),
+                          along = "survey_year",
+                          nsim = 10,
+                          alpha = 0.1, 
+                          breaks = c(3, 4, 5))
+
+print(m_sim_year)
+plot(m_sim_year)
+```
+
+## Logisitic
+
+Try logistic. And this time, test for change in dist_asr
+
+```{r}
+dat_model_binomial <- dat_model %>% 
+  mutate(presence = if_else(haypiles_active > 0, 1, 0)) %>% 
+  mutate(survey_year = as.numeric(survey_year),
+         dist_asr_minx = scale(dist_asr_min))
+
+m_b <- glmer(presence ~ dist_asr_min + elevation_scaled + survey_year + (1|site),
+          family = binomial(link = "logit"), 
+          data = dat_model_binomial)
+summary(m_b)
+
+m_b_sim <- m_b
+fixef(m_b_sim)["dist_asr_min"]<- 0.1823
+summary(m_b_sim)
+
+```
+
+```{r}
+m_b_sim_extend <- extend(m_b_sim, along="site", n=60)
+
+m_b_sim_sites <- powerCurve(m_b_sim_extend,
+                          along = "site",
+                          test = fixed("dist_asr_min"),
+                          nsim = 10,
+                          alpha = 0.1, 
+                          breaks = c(20, 30, 40, 50))
+
+print(m_b_sim_sites)
+plot(m_b_sim_sites)
+```
+
+Along years
+
+```{r}
+m_b_sim_extend_year <- extend(m_b_sim, along="survey_year", n=10)
+
+m_b_sim_year <- powerCurve(m_b_sim_extend_year,
+                          along = "survey_year",
+                          test = fixed("dist_asr_min"),
+                          nsim = 40,
+                          alpha = 0.1, 
+                          breaks = c(2, 3, 4, 5, 6, 7))
+
+print(m_b_sim_year)
+plot(m_b_sim_year)
+
+```
