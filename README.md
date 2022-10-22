@@ -1,5 +1,6 @@
 # Analysis of Pika Data
 
-Get data files from SP site. 
+Data and outputs are proprietary and should not be saved on GitHub. See the .gitignore file. 
 
-Output is proprietary and should not be saved on GitHub.
+Get data_raw folder SP site. 
+

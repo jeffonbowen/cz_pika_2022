@@ -43,11 +43,11 @@ vignettes/*.pdf
 *.pdf
 
 # All data folders. The data is proprietary.
-data_raw/*.*
+data_raw/
 
 
 # File in output folders. Those can be regenerated from the code. 
-ouput/*.*
+ouput/
 
 
 # All zip files, which are archives
